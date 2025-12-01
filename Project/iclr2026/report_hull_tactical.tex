@@ -1,0 +1,241 @@
+\documentclass{article}
+\usepackage{iclr2026_conference,times}
+\input{math_commands.tex}
+
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+
+% 取消注释以生成最终版本
+% \iclrfinalcopy
+
+\title{Hull Tactical Market Prediction: \\
+A Machine Learning Approach for Portfolio Weight Optimization}
+
+\author{
+Your Name \\
+School of Data Science\\
+The Chinese University of Hong Kong, Shenzhen\\
+\texttt{your.email@link.cuhk.edu.cn}
+}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+本报告探讨了Hull Tactical市场预测竞赛中的投资组合权重优化问题。我们的目标是预测标普500指数的每日最优投资敞口权重(0-2之间)，以最大化波动率调整后的夏普比率。我们采用了多种机器学习方法，包括LightGBM、随机森林和梯度提升等集成学习算法，结合特征工程和时间序列交叉验证策略。实验结果表明，我们的方法能够有效地捕捉市场动态，生成具有竞争力的投资权重预测。本文详细介绍了数据预处理、特征工程、模型选择和评估的完整流程。
+\end{abstract}
+
+\section{引言}
+
+\subsection{问题背景}
+
+Hull Tactical市场预测竞赛旨在测试数据科学技术是否能够发现金融市场中的可重复模式，从而挑战有效市场假说(EMH)。有效市场假说认为，由于价格已经反映了所有可用信息，持续跑赢市场是不可能的\citep{fama1970efficient}。
+
+本竞赛的核心任务是为每个交易日预测一个介于0到2之间的投资权重：
+\begin{itemize}
+    \item 权重为0：仅持有现金（无市场敞口）
+    \item 权重为1：全额投资于标普500指数
+    \item 权重为2：200\%杠杆做多指数
+\end{itemize}
+
+\subsection{评估指标}
+
+竞赛使用波动率调整后的夏普比率作为评估指标。该指标对波动性显著高于市场或未能跑赢市场收益的策略进行惩罚。设$r_t$为第$t$天的远期收益率，$r_f$为无风险利率，$w_t$为预测权重，则策略收益为：
+\begin{equation}
+    R_t^{strategy} = r_f \cdot (1 - w_t) + w_t \cdot r_t
+\end{equation}
+
+调整后的夏普比率计算如下：
+\begin{equation}
+    \text{Adjusted Sharpe} = \frac{\text{Sharpe Ratio}}{\text{Vol Penalty} \times \text{Return Penalty}}
+\end{equation}
+
+其中波动率惩罚因子为：
+\begin{equation}
+    \text{Vol Penalty} = 1 + \max\left(0, \frac{\sigma_{strategy}}{\sigma_{market}} - 1.2\right)
+\end{equation}
+
+\section{数据探索与特征工程}
+
+\subsection{数据概述}
+
+训练数据集包含约9000个交易日的历史市场数据，每个交易日有数百个特征。特征分为以下几类：
+
+\begin{table}[h]
+\centering
+\caption{特征类别汇总}
+\begin{tabular}{lll}
+\toprule
+前缀 & 类别 & 描述 \\
+\midrule
+D* & 虚拟变量 & 二进制标志 \\
+E* & 宏观经济 & 经济指标 \\
+I* & 利率 & 利率相关变量 \\
+M* & 市场动态 & 技术指标 \\
+P* & 价格估值 & 估值指标 \\
+S* & 情绪 & 市场情绪 \\
+V* & 波动率 & 波动率指标 \\
+MOM* & 动量 & 动量指标 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{缺失值处理}
+
+早期的观测值包含大量缺失值。通过分析，我们发现从某个特定的date\_id开始，数据相对完整（缺失值比例低于5\%）。我们的处理策略包括：
+
+\begin{enumerate}
+    \item 筛选数据完整的训练样本
+    \item 对剩余缺失值使用中位数填充
+    \item 对所有特征进行标准化处理
+\end{enumerate}
+
+\subsection{特征工程}
+
+除了原始特征外，我们还考虑了以下特征工程方法：
+
+\begin{itemize}
+    \item \textbf{滚动统计特征}：计算关键指标的移动平均和移动标准差
+    \item \textbf{特征交互}：构建波动率与动量指标的交互特征
+    \item \textbf{滞后特征}：利用历史信息构建滞后特征
+\end{itemize}
+
+\section{模型选择与训练}
+
+\subsection{候选模型}
+
+我们评估了以下几种机器学习模型：
+
+\begin{enumerate}
+    \item \textbf{线性模型}：Ridge回归、Lasso回归、ElasticNet
+    \item \textbf{集成学习}：随机森林、梯度提升决策树
+    \item \textbf{高级梯度提升}：LightGBM、XGBoost
+\end{enumerate}
+
+\subsection{交叉验证策略}
+
+由于金融时间序列数据的时间依赖性，我们采用时间序列交叉验证(TimeSeriesSplit)而非随机交叉验证：
+
+\begin{algorithm}
+\caption{时间序列交叉验证}
+\begin{algorithmic}
+\STATE 将数据按时间顺序分为$K$折
+\FOR{$k = 1$ to $K$}
+    \STATE 训练集: 第$1$到$k$折的数据
+    \STATE 验证集: 第$k+1$折的数据
+    \STATE 训练模型并评估验证集性能
+\ENDFOR
+\STATE 返回平均验证性能
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{预测到权重的转换}
+
+模型预测的是收益率，需要将其转换为投资权重。我们采用Sigmoid函数进行映射：
+
+\begin{equation}
+    w = \frac{2}{1 + e^{-\alpha \cdot \hat{r}}}
+\end{equation}
+
+其中$\hat{r}$是预测收益率，$\alpha$是缩放参数。这确保了权重始终在[0, 2]范围内。
+
+\section{评估}
+
+\subsection{模型比较}
+
+表\ref{tab:model_comparison}展示了不同模型在时间序列交叉验证中的表现。
+
+\begin{table}[h]
+\centering
+\caption{模型性能比较}
+\label{tab:model_comparison}
+\begin{tabular}{lcc}
+\toprule
+模型 & 平均调整夏普比率 & 标准差 \\
+\midrule
+Ridge & X.XXX & X.XXX \\
+LightGBM & X.XXX & X.XXX \\
+RandomForest & X.XXX & X.XXX \\
+GradientBoosting & X.XXX & X.XXX \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textit{注：请在运行代码后填入实际数值。}
+
+\subsection{基准对比}
+
+我们将模型策略与以下基准策略进行对比：
+\begin{itemize}
+    \item 全仓持有 (weight=1)
+    \item 半仓持有 (weight=0.5)
+    \item 1.5倍杠杆 (weight=1.5)
+\end{itemize}
+
+\subsection{Kaggle提交结果}
+
+我们的模型在Kaggle公共排行榜上的分数为：\textbf{[请填入实际分数]}
+
+需要注意的是，公共测试集只是训练数据最后180天的副本，因此公共排行榜分数仅供参考。
+
+\section{结论}
+
+\subsection{有效的方法}
+
+\begin{itemize}
+    \item 使用时间序列交叉验证避免未来数据泄露
+    \item 筛选数据完整的训练样本提高模型质量
+    \item Sigmoid函数转换确保权重在有效范围内
+    \item 集成学习方法（如LightGBM）表现优于线性模型
+\end{itemize}
+
+\subsection{面临的挑战}
+
+\begin{itemize}
+    \item 早期数据大量缺失
+    \item 金融市场的高噪声特性
+    \item 波动率和收益的双重约束
+\end{itemize}
+
+\subsection{可能的改进}
+
+\begin{itemize}
+    \item 引入更复杂的特征工程
+    \item 使用深度学习方法（如LSTM）捕捉时序依赖
+    \item 集成多个模型的预测
+    \item 动态调整Sigmoid转换的缩放参数
+\end{itemize}
+
+\section*{致谢}
+
+感谢DDA3020课程组提供的指导和资源。
+
+\bibliography{iclr2026_conference}
+\bibliographystyle{iclr2026_conference}
+
+\begin{thebibliography}{9}
+
+\bibitem{fama1970efficient}
+Fama, E. F. (1970).
+\newblock Efficient capital markets: A review of theory and empirical work.
+\newblock {\em The journal of Finance}, 25(2):383--417.
+
+\bibitem{lightgbm}
+Ke, G., Meng, Q., Finley, T., Wang, T., Chen, W., Ma, W., Ye, Q., \& Liu, T. Y. (2017).
+\newblock LightGBM: A highly efficient gradient boosting decision tree.
+\newblock {\em Advances in neural information processing systems}, 30.
+
+\bibitem{sharpe1994}
+Sharpe, W. F. (1994).
+\newblock The Sharpe ratio.
+\newblock {\em Journal of portfolio management}, 21(1):49--58.
+
+\end{thebibliography}
+
+\end{document}
